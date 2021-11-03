@@ -1,7 +1,3 @@
-/**
- *Submitted for verification at BscScan.com on 2021-05-29
- */
-
 // SPDX-License-Identifier: MIT
 
 pragma solidity ^0.8.0;
@@ -184,19 +180,19 @@ interface IERC20 {
     );
 }
 
-contract MemepadProject is Ownable {
+contract TribeProject is Ownable {
     struct WhitelistInput {
+        uint256 tier;
+        uint256 maxPurchasableTiers;
         address wallet;
-        uint256 maxPayableAmount;
     }
 
     struct Whitelist {
+        uint256 maxPurchasableTiers;
+        uint256 tiersPurchased;
+        uint256 tier;
         address wallet;
-        uint256 amount;
-        uint256 maxPayableAmount;
-        uint256 rewardedAmount;
         bool whitelist;
-        bool redeemed;
     }
 
     // Whitelist map
@@ -204,15 +200,13 @@ contract MemepadProject is Ownable {
 
     // Private
     IERC20 private _token;
+    uint256[] private tiers;
     // Public
     uint256 public startTime;
-    uint256 public tokenRate;
-    uint256 public soldAmount;
     uint256 public totalRaise;
     uint256 public totalParticipant;
-    uint256 public totalRedeemed;
-    uint256 public totalRewardTokens;
     bool public isFinished;
+    bool public tiersAdded;
 
     // Events
     event ESetAcceptedTokenAddress(
@@ -227,45 +221,30 @@ contract MemepadProject is Ownable {
         uint8 _decimals,
         uint256 _totalSupply
     );
-    event ESetTokenRate(uint256 _tokenRate);
     event EOpenSale(uint256 _startTime, bool _isStart);
     event EBuyTokens(
         address _sender,
         uint256 _value,
-        uint256 _totalToken,
-        uint256 _rewardedAmount,
-        uint256 _senderTotalAmount,
-        uint256 _senderTotalRewardedAmount,
-        uint256 _senderSoldAmount,
-        uint256 _senderTotalRise,
-        uint256 _totalParticipant,
-        uint256 _totalRedeemed
+        uint256 _totalRaise,
+        uint256 _totalParticipant
     );
     event EFinishSale(bool _isFinished);
-    event ERedeemTokens(address _wallet, uint256 _rewardedAmount);
+    event EAddTiers(uint256[] _tiers);
     event EAddWhiteList(WhitelistInput[] _addresses);
     event ERemoveWhiteList(address[] _addresses);
     event EWithdrawBNBBalance(address _sender, uint256 _balance);
-    event EWithdrawRemainingTokens(address _sender, uint256 _remainingAmount);
-    event EAddRewardTokens(
-        address _sender,
-        uint256 _amount,
-        uint256 _remaingRewardTokens
-    );
-
-    constructor() {
-        // Token rate
-        tokenRate = 10000000000000000; // default token rate is 0.01
-    }
 
     // Read: Get token address
     function getTokenAddress() public view returns (address tokenAddress) {
         return address(_token);
     }
 
-    // Read: Get Total Token
-    function getTotalToken() public view returns (uint256) {
-        return _token.balanceOf(address(this));
+    // Read: Get Tier Amount in BNB
+    function getTierAmount(uint256 index) public view returns (uint256 _tier) {
+        if (index > 0 && index <= tiers.length) {
+            return tiers[index - 1];
+        }
+        return 0;
     }
 
     function isInitialized() public view returns (bool) {
@@ -277,22 +256,6 @@ contract MemepadProject is Ownable {
         return isInitialized() && startTime > 0 && block.timestamp >= startTime;
     }
 
-    //read token in BNB
-    function getTokenInBNB(uint256 tokens) public view returns (uint256) {
-        uint256 tokenDecimal = 10**uint256(_token.decimals());
-        return (tokens * tokenRate) / tokenDecimal;
-    }
-
-    // Read: Calculate Token
-    function calculateAmount(uint256 acceptedAmount)
-        public
-        view
-        returns (uint256)
-    {
-        uint256 tokenDecimal = 10**uint256(_token.decimals());
-        return (acceptedAmount * tokenDecimal) / tokenRate;
-    }
-
     // Read: Get max payable amount against whitelisted address
     function getMaxPayableAmount(address _address)
         public
@@ -300,7 +263,9 @@ contract MemepadProject is Ownable {
         returns (uint256)
     {
         Whitelist memory whitelistWallet = whitelist[_address];
-        return whitelistWallet.maxPayableAmount;
+        return
+            whitelistWallet.maxPurchasableTiers *
+            tiers[whitelistWallet.tier - 1];
     }
 
     // Read: Get whitelist wallet
@@ -309,27 +274,20 @@ contract MemepadProject is Ownable {
         view
         returns (
             address _wallet,
-            uint256 _amount,
-            uint256 _maxPayableAmount,
-            uint256 _rewardedAmount,
-            bool _redeemed,
+            uint256 _tier,
+            uint256 _tiersPurchased,
+            uint256 _maxPurchasableTiers,
             bool _whitelist
         )
     {
         Whitelist memory whitelistWallet = whitelist[_address];
         return (
             _address,
-            whitelistWallet.amount,
-            whitelistWallet.maxPayableAmount,
-            whitelistWallet.rewardedAmount,
-            whitelistWallet.redeemed,
+            whitelistWallet.tier,
+            whitelistWallet.tiersPurchased,
+            whitelistWallet.maxPurchasableTiers,
             whitelistWallet.whitelist
         );
-    }
-
-    //Read return remaining reward
-    function getRemainingReward() external view returns (uint256) {
-        return totalRewardTokens - soldAmount;
     }
 
     // Fallback: Revert receive ether
@@ -351,20 +309,11 @@ contract MemepadProject is Ownable {
         );
     }
 
-    // Write: Owner set exchange rate
-    function setTokenRate(uint256 _tokenRate) external onlyOwner {
-        require(!isInitialized(), "This step should perform before the sale");
-        require(_tokenRate > 0, "The rate must not be zero");
-
-        tokenRate = _tokenRate;
-        // Emit event
-        emit ESetTokenRate(tokenRate);
-    }
-
     // Write: Open sale
     // Ex _startTime = 1618835669
     function openSale(uint256 _startTime) external onlyOwner {
         require(!isInitialized(), "This step should perform before the sale");
+
         require(
             _startTime >= block.timestamp,
             "start time should be greater than current time"
@@ -372,10 +321,6 @@ contract MemepadProject is Ownable {
         require(
             getTokenAddress() != address(0),
             "Token address has not initialized yet"
-        );
-        require(
-            getTotalToken() > 0,
-            "Total token for sale must greater than zero"
         );
 
         startTime = _startTime;
@@ -397,65 +342,38 @@ contract MemepadProject is Ownable {
         require(isStart(), "Sale is not started yet");
         require(!isFinished, "Sale is finished");
         require(whitelistSnapshot.whitelist, "You are not in whitelist");
+        uint256 tierAmount = getTierAmount(whitelistSnapshot.tier);
         require(
-            acceptedAmount > 0,
-            "You must pay some accepted tokens to get sale tokens"
+            acceptedAmount % tierAmount == 0,
+            "You must send bnb equal to a multiple of tier amount"
         );
 
-        uint256 rewardedAmount = calculateAmount(acceptedAmount);
+        uint256 tiersToPurchase = acceptedAmount / tierAmount;
+
+        require(tiersToPurchase > 0, "You must purchase some tokens");
         require(
-            whitelistSnapshot.maxPayableAmount >=
-                whitelistSnapshot.rewardedAmount + rewardedAmount,
-            "You can not send ether more than max payable amount"
+            tiersToPurchase <=
+                whitelistSnapshot.maxPurchasableTiers -
+                    whitelistSnapshot.tiersPurchased,
+            "You can not purchase that many tokens"
         );
-
-        uint256 totalToken = getTotalToken();
-        uint256 unsoldTokens = totalRewardTokens - soldAmount;
-        uint256 tokenValueInBNB = getTokenInBNB(unsoldTokens);
-
-        if (acceptedAmount > tokenValueInBNB) {
-            //refund excess amount
-            uint256 excessAmount = acceptedAmount - tokenValueInBNB;
-            //remaining amount
-            acceptedAmount = acceptedAmount - excessAmount;
-            senderAddress.transfer(excessAmount);
-            //finish the sale
-            isFinished = true;
-            emit EFinishSale(isFinished);
-            rewardedAmount = calculateAmount(acceptedAmount);
-        }
-
-        require(rewardedAmount > 0, "Zero rewarded amount");
 
         // Update total participant
-        // Check if current whitelist amount is zero and will be deposit
-        // then increase totalParticipant variable
-        if (whitelistSnapshot.amount == 0 && acceptedAmount > 0) {
+        if (whitelistSnapshot.tiersPurchased == 0) {
             totalParticipant = totalParticipant + 1;
         }
+
         // Update whitelist detail info
-        whitelist[senderAddress].amount =
-            whitelistSnapshot.amount +
-            acceptedAmount;
-        whitelist[senderAddress].rewardedAmount =
-            whitelistSnapshot.rewardedAmount +
-            rewardedAmount;
+        whitelist[senderAddress].tiersPurchased += tiersToPurchase;
         // Update global info
-        soldAmount = soldAmount + rewardedAmount;
         totalRaise = totalRaise + acceptedAmount;
 
         // Emit buy event
         emit EBuyTokens(
             senderAddress,
             acceptedAmount,
-            totalToken,
-            rewardedAmount,
-            whitelist[senderAddress].amount,
-            whitelist[senderAddress].rewardedAmount,
-            soldAmount,
             totalRaise,
-            totalParticipant,
-            totalRedeemed
+            totalParticipant
         );
     }
 
@@ -467,36 +385,12 @@ contract MemepadProject is Ownable {
         return isFinished;
     }
 
-    ///////////////////////////////////////////////////
-    // AFTER SALE
-    // Write: Redeem Rewarded Tokens
-    function redeemTokens() external {
-        address senderAddress = _msgSender();
-
-        require(
-            whitelist[senderAddress].whitelist,
-            "Sender is not in whitelist"
-        );
-
-        Whitelist memory whitelistWallet = whitelist[senderAddress];
-
-        require(isFinished, "Sale is not finalized yet");
-        require(!whitelistWallet.redeemed, "Redeemed already");
-
-        whitelist[senderAddress].redeemed = true;
-        _token.transfer(whitelistWallet.wallet, whitelistWallet.rewardedAmount);
-
-        // Update total redeem
-        totalRedeemed = totalRedeemed + whitelistWallet.rewardedAmount;
-
-        // Emit event
-        emit ERedeemTokens(
-            whitelistWallet.wallet,
-            whitelistWallet.rewardedAmount
-        );
-        // rewarded amount should b 0 after giving the reward
-        whitelist[senderAddress].rewardedAmount = 0;
-        whitelist[senderAddress].amount = 0;
+    // Write: Add Tiers
+    function addTiers(uint256[] memory _tiers) external onlyOwner {
+        require(!tiersAdded, "Tiers already added");
+        require(!isStart(), "Sale is started");
+        tiersAdded = true;
+        tiers = _tiers;
     }
 
     ///////////////////////////////////////////////////
@@ -504,18 +398,20 @@ contract MemepadProject is Ownable {
     // Write: Add Whitelist
     function addWhitelist(WhitelistInput[] memory inputs) external onlyOwner {
         require(!isStart(), "Sale is started");
-
+        require(tiersAdded, "Tiers not added yet");
         uint256 addressesLength = inputs.length;
+        uint256 totalTiers = tiers.length;
 
         for (uint256 i = 0; i < addressesLength; i++) {
             WhitelistInput memory input = inputs[i];
+            // require(input.tier <= totalTiers, "Invalid tier assigned");
+
             Whitelist memory _whitelist = Whitelist(
+                input.maxPurchasableTiers,
+                0,
+                input.tier,
                 input.wallet,
-                0,
-                input.maxPayableAmount,
-                0,
-                true,
-                false
+                true
             );
             whitelist[input.wallet] = _whitelist;
         }
@@ -533,11 +429,10 @@ contract MemepadProject is Ownable {
             address _address = addresses[i];
             Whitelist memory _whitelistSnapshot = whitelist[_address];
             whitelist[_address] = Whitelist(
+                _whitelistSnapshot.maxPurchasableTiers,
+                _whitelistSnapshot.tiersPurchased,
+                _whitelistSnapshot.tier,
                 _address,
-                _whitelistSnapshot.amount,
-                _whitelistSnapshot.maxPayableAmount,
-                _whitelistSnapshot.rewardedAmount,
-                _whitelistSnapshot.redeemed,
                 false
             );
         }
@@ -554,32 +449,5 @@ contract MemepadProject is Ownable {
 
         // Emit event
         emit EWithdrawBNBBalance(sender, balance);
-    }
-
-    // Write: Owner withdraw tokens which are not sold
-    function withdrawRemainingTokens() external onlyOwner {
-        address payable sender = _msgSender();
-        uint256 lockAmount = soldAmount - totalRedeemed;
-        uint256 remainingAmount = getTotalToken() - lockAmount;
-
-        _token.transfer(sender, remainingAmount);
-
-        // Emit event
-        emit EWithdrawRemainingTokens(sender, remainingAmount);
-    }
-
-    // Write: Owner can add reward tokens
-    function addRewardTokens(uint256 _amount) external onlyOwner {
-        require(
-            getTokenAddress() != address(0),
-            "Token address has not initialized yet"
-        );
-        require(_amount > 0, "amont should not be 0");
-
-        address payable sender = _msgSender();
-        _token.transferFrom(sender, address(this), _amount);
-        totalRewardTokens = totalRewardTokens + _amount;
-
-        emit EAddRewardTokens(sender, _amount, totalRewardTokens);
     }
 }
